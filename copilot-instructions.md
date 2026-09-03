@@ -17,11 +17,15 @@ border, a font size, a radius, or padding. Every visual property reads a named f
 defined in `App.Formulas` — `YzTheme`, `YzGrid`, or `YzCtl`.
 
 Only `0` and `1` are permitted, and only on `BorderThickness`, `Padding*`, `LayoutGap` and
-`TemplatePadding`. Grid cell indices are not literals.
+`TemplatePadding`.
 
 🔴 **Never invent a token name.** If no existing formula fits, say so and stop — do not
 substitute the nearest match, and do not create a new token yourself. A new token is Majd's
 decision.
+
+⚠️ **Use one token family consistently for one kind of property.** Do not size one control's
+font from `YzCtl.Font.*` and another's from `YzGrid.Type.*` in the same screen. If you are
+unsure which family owns a property, ask rather than mixing.
 
 ---
 
@@ -29,26 +33,76 @@ decision.
 
 One grid container is the only direct child of a screen, named `cntGrid<Screen>`. It is
 **192 × 108 columns in landscape, 108 × 192 in portrait** — same cell count, transposed.
-`YzIsDesktop = App.Width > App.Height` decides which. Every control is placed by grid
-coordinates, not by X/Y chosen freehand — and every pixel-valued property derives from cell
-width, never a literal pixel.
+`YzIsDesktop = App.Width > App.Height` decides which. Every control is placed by
+`LayoutGridColumnStart` / `ColumnEnd` / `RowStart` / `RowEnd` — never by X and Y.
+
+🔴 **Copy the container from an existing screen verbatim before placing any child**, changing
+only the names. Every one of its properties is load-bearing. In particular: `LayoutGap` is `0`
+and stays `0`, because it is what makes `container.Width / columns` exactly the track width.
+Every reference inside it is to the **screen**, never to the container's own other dimension —
+that produces a two-pass chain that settles one layout pass late.
 
 Do not propose auto-layout containers, a coarser grid, or a repeating timer to force re-layout.
 All three were tried on this project and abandoned; do not re-propose them.
+
+### Sizing from the cell
+
+Any pixel-valued property is `(cnt.Width / YzGrid.Cols) * <token>` — always the **width**, never
+the height. Tokens are expressed in cells, not pixels.
+
+Clamp what a human reads or touches; leave geometry proportional. A button can shrink
+indefinitely, a word cannot. Font sizes and touch targets get clamped; panels, spacing and
+insets do not. The clamp goes on the `Size` property, not in the token.
+
+---
+
+## 🔴 Grid coordinates are derived, never chosen
+
+**This is the rule most easily broken while appearing to follow every other rule.** A cell index
+is not a literal, so inventing one passes the no-literals check — and is still wrong.
+
+- **Anchor to siblings, not numbers.** A control's row start is
+  `<previousControl>.LayoutGridRowEnd + <gap token>`, not a number you picked. Chaining this way
+  means inserting a control shifts everything below it instead of forcing a renumber.
+- **A field sits `<label>.LayoutGridRowEnd + YzCtl.Gap.Tight` below its label**, in both modes.
+  `Gap.Tight` is the label-to-its-own-field distance. `Gap.Standard` is the distance between two
+  *different* controls. They are not interchangeable.
+- **A card starts at `<header>.LayoutGridRowEnd`**, not a number one row lower.
+- **Count the rows before writing a form.** A label-plus-field row costs
+  `Line.Micro + Gap.Tight + Height.Standard + Gap.Standard`. Multiply by the field count, add
+  the title block and the button row, and compare against the available height. **If it does not
+  fit, stop and say so** — pairing two fields or moving one is Majd's decision, not something to
+  discover halfway through.
+- **Overlays clear the container frame by two columns on every side**, including scrims and
+  transparent hit targets. One column is not enough; the border stroke sits on the edge of
+  column 1.
+- **A desktop-only column anchor needs a mobile branch.** A field ending at a sibling's
+  `ColumnStart` collapses to nothing when that sibling moves to its own row in portrait.
+- **A transparent hit target must be the last child** of its container or template, or the
+  labels it covers swallow the clicks.
+- **Control names are unique across the whole app**, not just the screen. Suffix everything on a
+  screen built by copying another.
+
+**If you cannot derive a coordinate from a sibling or a token, do not invent one. Say which
+coordinate you could not derive and stop.**
 
 ---
 
 ## Before writing anything
 
-1. **Read the target `.pa.yaml` whole, once.** Never conclude a control is missing from
-   reading only the first part of the file — the server's child order bears no relation to the
-   screen's structure, and a control can sit thousands of lines from where you'd expect it.
-2. **Call `describe_control` before using any property or enum you have not already used on
-   that control type in this session.** Known traps: `Tooltip` is not valid on `ModernText`.
-   `Label` has `Fill` but no `Radius*` — a rounded tile needs a `ModernText` behind it.
+1. **Read the target `.pa.yaml` whole, once.** Never conclude a control is missing from reading
+   only the first part of the file — the server's child order bears no relation to the screen's
+   structure, and a control can sit thousands of lines from where you'd expect it.
+2. **Call `describe_control` before using any property or enum you have not already used on that
+   control type in this session.** Known traps: `Tooltip` is not valid on `ModernText`, and on
+   touch it renders as a permanent grey label rather than a hover hint. `Label` has `Fill` but no
+   `Radius*` — a rounded tile needs a `ModernText` behind it. `ModernButton` has no `Fill`.
    `ModernDropdown.ItemDisplayText` is a per-row expression (`=ThisItem.name`), not a column
-   name. `SetFocus` does not work on modern input controls, only classic ones.
-3. **State your plan before writing** — which controls, what creation order, and why — when the
+   name. `SetFocus` works only on classic controls, not modern inputs.
+3. **Copy the nearest existing screen's control blocks verbatim** and change only names and
+   data. A mockup shows intent; the existing screen carries working geometry. Rebuilding a
+   pattern from a picture reintroduces every fault the original already solved.
+4. **State your plan before writing** — which controls, what creation order, and why — when the
    change involves more than one control.
 
 ## Z-order and writes — read this before touching more than one control
@@ -76,6 +130,8 @@ verbatim; do not summarise or paraphrase an error.
 **A passed compile is not proof the screen is correct.** Compilation does not resolve control
 references — a formula naming a control that does not exist still compiles.
 
+**Ctrl+S is not a publish.** A device runs the last published build.
+
 ---
 
 ## The folder and the sync/compile mechanics
@@ -95,13 +151,30 @@ references — a formula naming a control that does not exist still compiles.
 
 ---
 
+## Before saying a screen is broken
+
+In order, and do not skip ahead to a hypothesis:
+
+1. Have I read the whole file this session?
+2. Is the control actually present, anywhere in the file?
+3. Are there duplicate generations of it under different names?
+4. Is it below something opaque — earlier in the child list?
+5. Is `Visible` false, or gated on a variable that is false right now?
+6. Do its anchors reference a control that exists?
+7. Is a property or enum invalid for that control type?
+
+**For anything about how Power Apps itself behaves, search the Microsoft documentation before
+offering a hypothesis.** Do not reason it out.
+
+---
+
 ## What you decide, and what you don't
 
 You execute the specific instruction given. You do not:
 
 - rename a control that another screen or a formula may reference
 - decide a data contract, a stored procedure shape, or a security boundary
-- invent a token name
+- invent a token name or a grid coordinate
 - silently redesign a screen because a mockup doesn't fit the grid — raise it and stop
 
 If an instruction is ambiguous or seems to require one of the above, say so and wait rather than
