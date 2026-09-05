@@ -50,9 +50,93 @@ All three were tried on this project and abandoned; do not re-propose them.
 Any pixel-valued property is `(cnt.Width / YzGrid.Cols) * <token>` — always the **width**, never
 the height. Tokens are expressed in cells, not pixels.
 
+🔴 **`cnt` is always the root container, at every depth.** A font on a control three levels deep
+still reads `cntGrid<Screen>.Width / YzGrid.Cols`. Never derive a pixel size from a
+sub-container's own width.
+
 Clamp what a human reads or touches; leave geometry proportional. A button can shrink
 indefinitely, a word cannot. Font sizes and touch targets get clamped; panels, spacing and
 insets do not. The clamp goes on the `Size` property, not in the token.
+
+---
+
+## Sub-containers — how screens are composed
+
+A screen is built from **regions**, not from sixty siblings. A region is a
+`GroupContainer / GridLayout` placed inside the root container, carrying its own grid.
+
+### The law
+
+A sub-container's internal counts equal the parent cells it spans, so one internal cell is
+exactly one parent cell and every token keeps its meaning inside it:
+
+```
+LayoutGridColumnStart:  =<placement on the parent>
+LayoutGridColumnEnd:    =<placement on the parent>
+LayoutGridRowStart:     =<placement on the parent>
+LayoutGridRowEnd:       =<placement on the parent>
+
+LayoutGridColumns:      =Self.LayoutGridColumnEnd - Self.LayoutGridColumnStart
+LayoutGridRows:         =Self.LayoutGridRowEnd - Self.LayoutGridRowStart
+LayoutGap:              =0
+LayoutGridRowMinHeight: =If(YzIsDesktop, 0, (scr.Height - YzGrid.Safe.Rows) / YzGrid.Rows)
+DropShadow:             =DropShadow.None
+PaddingTop/Bottom/Left/Right: =0
+```
+
+Write the two count properties exactly like that, with `Self.`. It is accepted by the compiler
+and it makes the law self-enforcing — the counts cannot fall out of step with the span.
+
+🔴 **Any other ratio silently changes what every token means.** A sub-container with 40 internal
+columns spanning 80 parent columns halves `Gap.Standard` and every column-derived size, with no
+error and no visible cause. Do not "simplify" the counts.
+
+🔴 **`LayoutGridRowMinHeight` is copied down from the parent unchanged**, or the child's rows are
+content-sized on mobile while the parent's are formula-sized — the two grids drift on a phone and
+agree in Studio.
+
+🔴 **`DropShadow: =DropShadow.None` is mandatory.** The grid container's default is a shadow, not
+none. Omitting it draws a box around a region meant to be invisible.
+
+### What this means when you write controls
+
+- **Child coordinates are local to their own container.** Local indices run `1 … count + 1`. The
+  right inset of a card is `cntCard.LayoutGridColumns + 1 - YzCtl.Inset.Card`, never the parent's
+  absolute end.
+- 🔴 **Never carry a coordinate between levels without converting it.** `LayoutGridColumn = 3`
+  means nothing until you know which container it is in. Read a child's coordinates only against
+  its own parent.
+- **The container is the plate.** A card, rail or panel needs no rectangle behind it —
+  `GroupContainer` has `Fill`, `BorderColor`, `BorderStyle`, `BorderThickness` and `Radius*`, and
+  it switches modes on its own properties:
+  `Fill: =If(YzIsDesktop, YzTheme.Color.Surface, YzTheme.Color.Transparent)`.
+- **One `Visible` for a whole region.** Put the condition on the container; the children carry
+  none. Do not repeat the same `Visible` expression on a dozen controls.
+- **A region that changes shape between modes changes its own span** —
+  `LayoutGridColumnStart: =If(YzIsDesktop, If(gblPaneOpen, 45, 104), 1)` — and its children
+  re-derive from it. **This is never a reason to duplicate a control.** A control with a value
+  lives in exactly one place.
+- **Three levels maximum**: root → region → state. Deeper is untested.
+- **Not everything belongs in a region.** A control whose two modes sit in unrelated parts of the
+  screen stays a direct child of the root with an `If()` pair.
+- **Nesting does not create a namespace.** Control names are still unique across the whole app.
+
+### Scrolling a region
+
+The one deliberate deviation from the law — a region needing more rows than the parent has left:
+
+```
+LayoutGridRows:         =<more rows than the span>
+LayoutGridRowMinHeight: =<parent>.Height / <parent>.LayoutGridRows
+LayoutOverflowY:        =LayoutOverflow.Scroll
+```
+
+`RowMinHeight` holds the child's rows at the parent's row height so theme spacing survives even
+though the counts no longer match.
+
+🔴 **This is undocumented.** Microsoft lists `LayoutOverflowY` only on the Horizontal and Vertical
+containers, not on the grid container. It works — it was tested on this project. Do not "correct"
+it from the documentation page.
 
 ---
 
@@ -82,6 +166,8 @@ is not a literal, so inventing one passes the no-literals check — and is still
   labels it covers swallow the clicks.
 - **Control names are unique across the whole app**, not just the screen. Suffix everything on a
   screen built by copying another.
+- **Stale `X`, `Y`, `Width` and `Height` on a grid child are ignored and are noise.** Studio drag
+  and drop leaves them behind. Strip them; do not reason from them.
 
 **If you cannot derive a coordinate from a sibling or a token, do not invent one. Say which
 coordinate you could not derive and stop.**
@@ -97,17 +183,22 @@ coordinate you could not derive and stop.**
    control type in this session.** Known traps: `Tooltip` is not valid on `ModernText`, and on
    touch it renders as a permanent grey label rather than a hover hint. `Label` has `Fill` but no
    `Radius*` — a rounded tile needs a `ModernText` behind it. `ModernButton` has no `Fill`.
-   `ModernDropdown.ItemDisplayText` is a per-row expression (`=ThisItem.name`), not a column
-   name. `SetFocus` works only on classic controls, not modern inputs.
+   `GroupContainer` defaults to a drop shadow. `ModernDropdown.ItemDisplayText` is a per-row
+   expression (`=ThisItem.name`), not a column name. `SetFocus` works only on classic controls,
+   not modern inputs.
 3. **Copy the nearest existing screen's control blocks verbatim** and change only names and
    data. A mockup shows intent; the existing screen carries working geometry. Rebuilding a
    pattern from a picture reintroduces every fault the original already solved.
-4. **State your plan before writing** — which controls, what creation order, and why — when the
-   change involves more than one control.
+4. **State your plan before writing** — which controls, which region each belongs to, what
+   creation order, and why — when the change involves more than one control.
 
 ## Z-order and writes — read this before touching more than one control
 
 - **Child order in the file is the Z-order.** The last child in the list paints on top.
+- **Order is scoped to a container.** Inside a region the order governs only that region's
+  children; the region itself sits in its parent's order as one item. This is why building in
+  regions makes layering cheap — controls outside a region cannot get on top of controls inside
+  it.
 - **There is no way to reorder Z-order.** No MCP tool sets it, and there is no bring-to-front in
   the modern Studio tree. **The only lever is creation order** — a newly created control is
   appended last. To raise a control above something else, create it under a new name; the old
@@ -142,10 +233,17 @@ references — a formula naming a control that does not exist still compiles.
 - `sync_canvas` also refuses to run against a folder that VS Code has open as its workspace
   root, because it cannot delete a directory that's in use. This is why VS Code must be opened
   one level above the canvas folder — on `D:\Dev`, not `D:\Dev\canvas`.
+- 🔴 **`compile_canvas` validates every `.pa.yaml` in the directory tree, subfolders included.**
+  Two synced apps under one root collide on `App` and `Screen1`:
+  `error: An entity with name 'App' already exists.` and
+  `error: Only one module may specify the EditorState top-level property.`
+  **A sync folder must never sit inside another sync folder.**
 - **Only one MCP client should hold a `connect` session against an app at a time.** If a sync or
   compile fails with a file-in-use or lock error, check whether Claude Desktop's
   `canvas-authoring` connector is also connected to the same folder, and disconnect one side
   before retrying.
+- The server can be left wedged after switching apps and then time out on `connect`. Ask Majd to
+  restart the client rather than retrying repeatedly.
 - If a tool call errors, paste the exact error string and stop. Do not retry more than once, and
   do not work around an error by taking a different, unrequested action.
 
@@ -158,10 +256,11 @@ In order, and do not skip ahead to a hypothesis:
 1. Have I read the whole file this session?
 2. Is the control actually present, anywhere in the file?
 3. Are there duplicate generations of it under different names?
-4. Is it below something opaque — earlier in the child list?
-5. Is `Visible` false, or gated on a variable that is false right now?
-6. Do its anchors reference a control that exists?
-7. Is a property or enum invalid for that control type?
+4. Is it inside the container I think it is, and are its coordinates local to that one?
+5. Is it below something opaque — earlier in the child list of *its own* parent?
+6. Is `Visible` false on it, **or on any container above it**?
+7. Do its anchors reference a control that exists?
+8. Is a property or enum invalid for that control type?
 
 **For anything about how Power Apps itself behaves, search the Microsoft documentation before
 offering a hypothesis.** Do not reason it out.
@@ -175,6 +274,7 @@ You execute the specific instruction given. You do not:
 - rename a control that another screen or a formula may reference
 - decide a data contract, a stored procedure shape, or a security boundary
 - invent a token name or a grid coordinate
+- change a sub-container's internal counts away from its span
 - silently redesign a screen because a mockup doesn't fit the grid — raise it and stop
 
 If an instruction is ambiguous or seems to require one of the above, say so and wait rather than
